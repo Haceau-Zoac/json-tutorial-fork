@@ -1,6 +1,9 @@
 #include "leptjson.h"
 #include <assert.h>  /* assert() */
+#include <math.h>
 #include <stdlib.h>  /* NULL, strtod() */
+#include <ctype.h>   /* isalpha() */
+#include <errno.h>   /* errno */
 
 #define EXPECT(c, ch)       do { assert(*c->json == (ch)); c->json++; } while(0)
 
@@ -42,13 +45,30 @@ static int lept_parse_null(lept_context* c, lept_value* v) {
     return LEPT_PARSE_OK;
 }
 
+static int lept_valid_after_zero(lept_context* c, int index) {
+    return c->json[index] == '.' || tolower(c->json[index]) == 'e' || c->json[index] == '\0';
+}
+
 static int lept_parse_number(lept_context* c, lept_value* v) {
     char* end;
-    /* \TODO validate number */
+    if (*c->json == '+' || *c->json == '.' ||
+       (*c->json != '-' && !isdigit(*c->json))) {
+        return LEPT_PARSE_INVALID_VALUE;
+    }
+    if ((c->json[0] == '0' && !lept_valid_after_zero(c, 1)) ||
+        (c->json[1] == '0' && !lept_valid_after_zero(c, 2))) {
+        return LEPT_PARSE_ROOT_NOT_SINGULAR;
+    }
     v->n = strtod(c->json, &end);
+    if (v->n == HUGE_VAL || v->n == -HUGE_VAL) {
+        return LEPT_PARSE_NUMBER_TOO_BIG;
+    }
     if (c->json == end)
         return LEPT_PARSE_INVALID_VALUE;
     c->json = end;
+    if (c->json[-1] == '.') {
+        return LEPT_PARSE_INVALID_VALUE;
+    }
     v->type = LEPT_NUMBER;
     return LEPT_PARSE_OK;
 }

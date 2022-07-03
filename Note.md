@@ -153,3 +153,135 @@ C 语言有 `assert()` 宏（`assert.h`）进行断言。release（`NDEBUG`）�
 ### 10　常见问答
 - 命名项目时，google 看名称是否独特。
 - `__LINE__` 宏表示编译时的行号。
+
+## 二　解析数字
+### 1　初探重构
+TDD 的步骤之一是重构（refactoring）：在不改变代码外在行为的前提下，对代码作出修改，以改进程序的内部结构。
+TDD 的过程中，我们可能过于关注正确率而忽视了其他方面，因此，我们之后要进行重构。
+`lept_parse_null()`、`lept_parse_true()`、`lept_parse_false()` 过于相像，违反了 DRY（Don't Repeat Yourself）原则。
+单元测试也有重复代码，例如 `test_parse_invalid_value()` 中，每次测试不合法的 JSON 值，都有 4 行相似代码，可以使用宏来简化：
+```c
+#define TEST_ERROR(error, json) \
+  do { \
+    lept_value v; \
+    v.type = LEPT_FALSE; \
+    EXPECT_EQ_INT(error, lept_parse(&v, json)); \
+    EXPECT_EQ_INT(LEPT_NULL, lept_get_type(&v)); \
+  } while (0)
+
+static void test_parse_expect_value() {
+  TEST_ERROR(LEPT_PARSE_EXPECT_VALUE, "");
+  TEST_ERROR(LEPT_PARSE_EXPECT_VALUE, " ");
+}
+```
+
+### 2　JSON 数字语法
+```ABNF
+number = [ "-" ] int [ frac ] [ exp ]
+int = "0" / digit1-9 *digit
+frac = "." 1*digit
+exp = ("e" / "E") ["-" / "+"] 1*digit
+```
+number 是十进制，包括负号、整数、小数、指数，只有整数必需。
+整数部分若 0 开头，只能是单个 0；以 1-9 开头，后面可接任意数量的数字（0-9）。
+小数部分是小数点后一或多个数字（0-9）。
+JSON 可用科学计数法，以 E 或 e 开始，接着可有正负号，然后是一或多个数字。
+![](tutorial02/images/number.png)
+
+### 3　数字表示方式
+以 `double` 存储。为 `lept_value` 添加成员：
+```c
+typedef struct lept_value {
+  double n;
+  lept_type type;
+} lept_value;
+```
+仅当 `type == LEPT_NUMBER` 时，`n` 才表示数值。
+```c
+double lept_get_number(lept_value const* v) {
+  assert(v != NULL && v->type == LEPT_NUMBER);
+  return v->n;
+}
+```
+使用者应确保类型正确。
+
+### 4　单元测试
+```c
+#define TEST_NUMBER(expect, json) \
+  do { \
+    lept_value v; \
+    EXPECT_EQ_INT(LEPT_PARSE_OK, lept_parse(&v, json)); \
+    EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(&v)); \
+    EXPECT_EQ_DOUBLE(expect, lept_get_number(&v)); \
+  } while(0)
+
+static void test_parse_number() {
+  TEST_NUMBER(0.0, "0");
+  TEST_NUMBER(0.0, "-0");
+  TEST_NUMBER(0.0, "-0.0");
+  TEST_NUMBER(1.0, "1");
+  TEST_NUMBER(-1.0, "-1");
+  TEST_NUMBER(1.5, "1.5");
+  TEST_NUMBER(-1.5, "-1.5");
+  TEST_NUMBER(3.1416, "3.1416");
+  TEST_NUMBER(1E10, "1E10");
+  TEST_NUMBER(1e10, "1e10");
+  TEST_NUMBER(1E+10, "1E+10");
+  TEST_NUMBER(1E-10, "1E-10");
+  TEST_NUMBER(-1E10, "-1E10");
+  TEST_NUMBER(-1e10, "-1e10");
+  TEST_NUMBER(-1E+10, "-1E+10");
+  TEST_NUMBER(-1E-10, "-1E-10");
+  TEST_NUMBER(1.234E+10, "1.234E+10");
+  TEST_NUMBER(1.234E-10, "1.234E-10");
+  TEST_NUMBER(0.0, "1e-10000"); /* must underflow */
+}
+```
+以及不合法用例：
+```c
+static void test_parse_invalid_value() {
+  /* ... */
+  /* invalid number */
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "+0");
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "+1");
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, ".123"); /* at least one digit before '.' */
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "1.");   /* at least one digit after '.' */
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "INF");
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "inf");
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "NAN");
+  TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "nan");
+}
+```
+
+### 5　十进制转换至二进制
+`strtod()` 可转换十进制数字至 `double`。
+```c
+#include <stdlib.h>  /* NULL, strtod() */
+
+static int lept_parse_number(lept_context* c, lept_value* v) {
+    char* end;
+    /* \TODO validate number */
+    v->n = strtod(c->json, &end);
+    if (c->json == end)
+        return LEPT_PARSE_INVALID_VALUE;
+    c->json = end;
+    v->type = LEPT_NUMBER;
+    return LEPT_PARSE_OK;
+}
+```
+value 语法变为：
+```ABNF
+value = null / false / true / number
+```
+`lept_parse_number()` 内部会检测值，所以可交余下情况至 `lept_parse_number()`：
+```c
+static int lept_parse_value(lept_context* c, lept_value* v) {
+  switch (*c->json) {
+    case 't':  return lept_parse_true(c, v);
+    case 'f':  return lept_parse_false(c, v);
+    case 'n':  return lept_parse_null(c, v);
+    default:   return lept_parse_number(c, v);
+    case '\0': return LEPT_PARSE_EXPECT_VALUE;
+  }
+}
+```
