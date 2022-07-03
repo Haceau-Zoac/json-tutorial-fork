@@ -285,3 +285,166 @@ static int lept_parse_value(lept_context* c, lept_value* v) {
   }
 }
 ```
+
+## 三　解析字符串
+### 1　JSON 字符串语法
+```ABNF
+string = quotation-mark *char quotation-mark
+char = unescaped /
+   escape (
+       %x22 /          ; "    quotation mark  U+0022
+       %x5C /          ; \    reverse solidus U+005C
+       %x2F /          ; /    solidus         U+002F
+       %x62 /          ; b    backspace       U+0008
+       %x66 /          ; f    form feed       U+000C
+       %x6E /          ; n    line feed       U+000A
+       %x72 /          ; r    carriage return U+000D
+       %x74 /          ; t    tab             U+0009
+       %x75 4HEXDIG )  ; uXXXX                U+XXXX
+escape = %x5C          ; \
+quotation-mark = %x22  ; "
+unescaped = %x20-21 / %x23-5B / %x5D-10FFFF
+```
+
+### 2　字符串表示
+JSON 支持空字符（`\0`），所以不能用 `\0` 作为结束——我们分配内存来储存解析后的字符与数目。
+`lept_value` 实际上是一个变体类型（variant type），通过 `type` 来决定它的类型，我们使用 `union` 节省内存。
+```c
+typedef struct {
+    union {
+        struct { char* s; size_t len; }s;  /* string */
+        double n;                          /* number */
+    }u;
+    lept_type type;
+}lept_value;
+```
+
+### 3　内存管理
+我们使用 `stdlib.h` 中的 `malloc()`、`realloc()`、`free()` 来管理内存。
+```c
+// h
+#define lept_set_null(v) lept_free(v)
+
+int lept_get_boolean(const lept_value* v);
+void lept_set_boolean(lept_value* v, int b);
+
+double lept_get_number(const lept_value* v);
+void lept_set_number(lept_value* v, double n);
+
+const char* lept_get_string(const lept_value* v);
+size_t lept_get_string_length(const lept_value* v);
+void lept_set_string(lept_value* v, const char* s, size_t len);
+```
+```c
+// c
+#define lept_init(v) do { (v)->type = LEPT_NULL; } while(0)
+
+void lept_set_string(lept_value* v, const char* s, size_t len) {
+    assert(v != NULL && (s != NULL || len == 0));
+    lept_free(v);
+    v->u.s.s = (char*)malloc(len + 1);
+    memcpy(v->u.s.s, s, len);
+    v->u.s.s[len] = '\0';
+    v->u.s.len = len;
+    v->type = LEPT_STRING;
+}
+
+void lept_free(lept_value* v) {
+    assert(v != NULL);
+    if (v->type == LEPT_STRING)
+        free(v->u.s.s);
+    v->type = LEPT_NULL;
+}
+```
+```c
+static void test_access_string() {
+    lept_value v;
+    lept_init(&v);
+    lept_set_string(&v, "", 0);
+    EXPECT_EQ_STRING("", lept_get_string(&v), lept_get_string_length(&v));
+    lept_set_string(&v, "Hello", 5);
+    EXPECT_EQ_STRING("Hello", lept_get_string(&v), lept_get_string_length(&v));
+    lept_free(&v);
+}
+```
+### 4　缓冲区与堆栈
+解析字符串时，缓冲区大小无法预知，因此采用动态数组（dynamic array）自动扩展。
+每次解析 JSON 时只需一个动态数组，并且先进后出，所以要一个动态栈（stack）。
+```c
+typedef struct {
+    const char* json;
+    char* stack;
+    size_t size, top;
+}lept_context;
+```
+`size` 是堆栈容量，`top` 是栈顶（我们会扩展 `stack`，所以不能用指针）。
+```c
+#ifndef LEPT_PARSE_STACK_INIT_SIZE
+#define LEPT_PARSE_STACK_INIT_SIZE 256
+#endif
+
+int lept_parse(lept_value* v, const char* json) {
+    lept_context c;
+    int ret;
+    assert(v != NULL);
+    c.json = json;
+    c.stack = NULL;        /* <- */
+    c.size = c.top = 0;    /* <- */
+    lept_init(v);
+    lept_parse_whitespace(&c);
+    if ((ret = lept_parse_value(&c, v)) == LEPT_PARSE_OK) {
+        /* ... */
+    }
+    assert(c.top == 0);    /* <- */
+    free(c.stack);         /* <- */
+    return ret;
+}
+
+static void* lept_context_push(lept_context* c, size_t size) {
+    void* ret;
+    assert(size > 0);
+    if (c->top + size >= c->size) {
+        if (c->size == 0)
+            c->size = LEPT_PARSE_STACK_INIT_SIZE;
+        while (c->top + size >= c->size)
+            c->size += c->size >> 1;  /* c->size * 1.5 */
+        c->stack = (char*)realloc(c->stack, c->size);
+    }
+    ret = c->stack + c->top;
+    c->top += size;
+    return ret;
+}
+
+static void* lept_context_pop(lept_context* c, size_t size) {
+    assert(c->top >= size);
+    return c->stack + (c->top -= size);
+}
+```
+使用 `#ifndef` 是为了用户可自行设置宏。
+
+### 5　解析字符串
+```c
+#define PUTC(c, ch) do { *(char*)lept_context_push(c, sizeof(char)) = (ch); } while(0)
+
+static int lept_parse_string(lept_context* c, lept_value* v) {
+    size_t head = c->top, len;
+    const char* p;
+    EXPECT(c, '\"');
+    p = c->json;
+    for (;;) {
+        char ch = *p++;
+        switch (ch) {
+            case '\"':
+                len = c->top - head;
+                lept_set_string(v, (const char*)lept_context_pop(c, len), len);
+                c->json = p;
+                return LEPT_PARSE_OK;
+            case '\0':
+                c->top = head;
+                return LEPT_PARSE_MISS_QUOTATION_MARK;
+            default:
+                PUTC(c, ch);
+        }
+    }
+}
+```
