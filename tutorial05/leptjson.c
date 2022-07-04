@@ -1,12 +1,10 @@
-#ifdef _WINDOWS
 #define _CRTDBG_MAP_ALLOC
+#include <stdlib.h>  /* NULL, malloc(), realloc(), free(), strtod() */
 #include <crtdbg.h>
-#endif
 #include "leptjson.h"
 #include <assert.h>  /* assert() */
 #include <errno.h>   /* errno, ERANGE */
 #include <math.h>    /* HUGE_VAL */
-#include <stdlib.h>  /* NULL, malloc(), realloc(), free(), strtod() */
 #include <string.h>  /* memcpy() */
 
 #ifndef LEPT_PARSE_STACK_INIT_SIZE
@@ -185,8 +183,9 @@ static int lept_parse_value(lept_context* c, lept_value* v);
 
 static int lept_parse_array(lept_context* c, lept_value* v) {
     size_t size = 0;
-    int ret;
+    int ret = LEPT_PARSE_OK;
     EXPECT(c, '[');
+    lept_parse_whitespace(c);
     if (*c->json == ']') {
         c->json++;
         v->type = LEPT_ARRAY;
@@ -197,10 +196,12 @@ static int lept_parse_array(lept_context* c, lept_value* v) {
     for (;;) {
         lept_value e;
         lept_init(&e);
+        lept_parse_whitespace(c);
         if ((ret = lept_parse_value(c, &e)) != LEPT_PARSE_OK)
-            return ret;
+            break;
         memcpy(lept_context_push(c, sizeof(lept_value)), &e, sizeof(lept_value));
         size++;
+        lept_parse_whitespace(c);
         if (*c->json == ',')
             c->json++;
         else if (*c->json == ']') {
@@ -210,10 +211,15 @@ static int lept_parse_array(lept_context* c, lept_value* v) {
             size *= sizeof(lept_value);
             memcpy(v->u.a.e = (lept_value*)malloc(size), lept_context_pop(c, size), size);
             return LEPT_PARSE_OK;
+        } else {
+            ret = LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET;
+            break;
         }
-        else
-            return LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET;
     }
+    for (int i = 0; i < size; ++i) {
+        lept_free((lept_value*)lept_context_pop(c, sizeof(lept_value)));
+    }
+    return ret;
 }
 
 static int lept_parse_value(lept_context* c, lept_value* v) {
@@ -253,6 +259,12 @@ void lept_free(lept_value* v) {
     assert(v != NULL);
     if (v->type == LEPT_STRING)
         free(v->u.s.s);
+    else if (v->type == LEPT_ARRAY) {
+        for (int i = 0; i < v->u.a.size; ++i) {
+            lept_free(&v->u.a.e[i]);
+        }
+        free(v->u.a.e);
+    }
     v->type = LEPT_NULL;
 }
 
@@ -283,7 +295,8 @@ void lept_set_number(lept_value* v, double n) {
 }
 
 const char* lept_get_string(const lept_value* v) {
-    assert(v != NULL && v->type == LEPT_STRING);
+    assert(v != NULL);
+    assert(v->type == LEPT_STRING);
     return v->u.s.s;
 }
 

@@ -1,9 +1,7 @@
-#ifdef _WINDOWS
 #define _CRTDBG_MAP_ALLOC
-#include <crtdbg.h>
-#endif
-#include <stdio.h>
 #include <stdlib.h>
+#include <crtdbg.h>
+#include <stdio.h>
 #include <string.h>
 #include "leptjson.h"
 
@@ -128,13 +126,67 @@ static void test_parse_string() {
 }
 
 static void test_parse_array() {
-    lept_value v;
+    {
+        lept_value v;
+        lept_init(&v);
+        EXPECT_EQ_INT(LEPT_PARSE_OK, lept_parse(&v, "[ ]"));
+        EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(&v));
+        EXPECT_EQ_SIZE_T(0, lept_get_array_size(&v));
+        lept_free(&v);
+    }
 
-    lept_init(&v);
-    EXPECT_EQ_INT(LEPT_PARSE_OK, lept_parse(&v, "[ ]"));
-    EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(&v));
-    EXPECT_EQ_SIZE_T(0, lept_get_array_size(&v));
-    lept_free(&v);
+    {
+        lept_value v;
+        lept_init(&v);
+        EXPECT_EQ_INT(LEPT_PARSE_OK, lept_parse(&v, "[ null , false , true , 123 , \"abc\" ]"));
+        EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(&v));
+        EXPECT_EQ_SIZE_T(5, lept_get_array_size(&v));
+            EXPECT_EQ_INT(LEPT_NULL, lept_get_type(lept_get_array_element(&v, 0)));
+            EXPECT_EQ_INT(LEPT_FALSE, lept_get_type(lept_get_array_element(&v, 1)));
+            EXPECT_EQ_INT(LEPT_TRUE, lept_get_type(lept_get_array_element(&v, 2)));
+            EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(&v, 3)));
+            EXPECT_EQ_DOUBLE(123., lept_get_number(lept_get_array_element(&v, 3)));
+            EXPECT_EQ_INT(LEPT_STRING, lept_get_type(lept_get_array_element(&v, 4)));
+            EXPECT_EQ_STRING("abc", lept_get_string(lept_get_array_element(&v, 4)), 3);
+        lept_free(&v);
+    }
+
+    {
+        lept_value v;
+        lept_value* t;
+        lept_init(&v);
+        EXPECT_EQ_INT(LEPT_PARSE_OK, lept_parse(&v, "[ [ ] , [ 0 ] , [ 0 , 1 ] , [ 0 , 1 , 2 ] ]"));
+        EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(&v));
+        EXPECT_EQ_SIZE_T(4, lept_get_array_size(&v));
+            t = lept_get_array_element(&v, 0);
+            EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(t));
+            EXPECT_EQ_SIZE_T(0, lept_get_array_size(t));
+
+            t = lept_get_array_element(&v, 1);
+            EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(t));
+            EXPECT_EQ_SIZE_T(1, lept_get_array_size(t));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 0)));
+                EXPECT_EQ_DOUBLE(0., lept_get_number(lept_get_array_element(t, 0)));
+
+            t = lept_get_array_element(&v, 2);
+            EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(t));
+            EXPECT_EQ_SIZE_T(2, lept_get_array_size(t));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 0)));
+                EXPECT_EQ_DOUBLE(0., lept_get_number(lept_get_array_element(t, 0)));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 1)));
+                EXPECT_EQ_DOUBLE(1., lept_get_number(lept_get_array_element(t, 1)));
+
+            t = lept_get_array_element(&v, 3);
+            EXPECT_EQ_INT(LEPT_ARRAY, lept_get_type(t));
+            EXPECT_EQ_SIZE_T(3, lept_get_array_size(t));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 0)));
+                EXPECT_EQ_DOUBLE(0., lept_get_number(lept_get_array_element(t, 0)));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 1)));
+                EXPECT_EQ_DOUBLE(1., lept_get_number(lept_get_array_element(t, 1)));
+                EXPECT_EQ_INT(LEPT_NUMBER, lept_get_type(lept_get_array_element(t, 2)));
+                EXPECT_EQ_DOUBLE(2., lept_get_number(lept_get_array_element(t, 2)));
+        lept_free(&v);
+    }
 }
 
 #define TEST_ERROR(error, json)\
@@ -167,10 +219,8 @@ static void test_parse_invalid_value() {
     TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "nan");
 
     /* invalid value in array */
-#if 0
     TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "[1,]");
     TEST_ERROR(LEPT_PARSE_INVALID_VALUE, "[\"a\", nul]");
-#endif
 }
 
 static void test_parse_root_not_singular() {
@@ -229,12 +279,10 @@ static void test_parse_invalid_unicode_surrogate() {
 }
 
 static void test_parse_miss_comma_or_square_bracket() {
-#if 0
     TEST_ERROR(LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1");
     TEST_ERROR(LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1}");
     TEST_ERROR(LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1 2");
     TEST_ERROR(LEPT_PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[[]");
-#endif
 }
 
 static void test_parse() {
@@ -303,9 +351,7 @@ static void test_access() {
 }
 
 int main() {
-#ifdef _WINDOWS
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
-#endif
     test_parse();
     test_access();
     printf("%d/%d (%3.2f%%) passed\n", test_pass, test_count, test_pass * 100.0 / test_count);
