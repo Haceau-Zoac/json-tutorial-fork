@@ -448,3 +448,71 @@ static int lept_parse_string(lept_context* c, lept_value* v) {
     }
 }
 ```
+
+## 四　Unicode
+### 1　Unicode
+ASCII 将 128 个字符映射至整数 0~127。
+Unicode 的范围是 0~0x10FFFF，码点记作 U+XXXX（16 进位数字）。
+### 2　需求
+非转义字符直接复制。
+`\uXXXX` 的字符需要：
+1. 解析 4 位十六进制整数为码点；
+2. 编码成 UTF-8。
+
+U+0000~U+FFFF 属于 BMP（basic multilingual plane，基本多文种平面）。BMP 以外的字符使用代理对（surrogate pair）表示`\uXXXX\uYYYY`。若第一个码点在 U+D800~U+DBFF，我们便知道了它的高代理项（high surrogate），之后跟着 U+DC00~U+DFFF 的低代理项（low surrogate），使用公式变代理对（H, L）为真实码点：
+```
+codepoint = 0x10000 + (H - 0xD800) x 0x400 + (L - 0xDC00)
+```
+若只有高代理项/低代理项码点不合法 -> `LEPT_PARSE_INVALID_UNICODE_SURROGATE`
+若 `\u` 后不是 4 位十六进位数字 -> `LEPT_PARSE_INVALID_UNICODE_HEX`
+### 3　UTF-8 编码
+UTF-8 网页使用率第一。
+UTF-8 的编码单元为 8 位（1 字节），每个码点编成 1~4 个字节。编码要把码点的二进制位分拆成 1~4 个字节：
+
+| 码点范围            | 码点位数  | 字节1     | 字节2    | 字节3    | 字节4     |
+|:------------------:|:--------:|:--------:|:--------:|:--------:|:--------:|
+| U+0000 ~ U+007F    | 7        | 0xxxxxxx |
+| U+0080 ~ U+07FF    | 11       | 110xxxxx | 10xxxxxx |
+| U+0800 ~ U+FFFF    | 16       | 1110xxxx | 10xxxxxx | 10xxxxxx |
+| U+10000 ~ U+10FFFF | 21       | 11110xxx | 10xxxxxx | 10xxxxxx | 10xxxxxx |
+与 ASCII 相兼容。
+例如解析 U+20AC：
+1. U+20AC 在 U+0800 ~ U+FFFF 范围，编码为 3 字节。
+2. U+20AC 为 10000010101100
+3. 3 字节需 16 位码点，补两个 0，得 0010000010101100
+4. 按表分为三组：0010 000010 101100
+5. 加前缀：11100010 10000010 10101100
+6. 转换为十六进制：0xE2 0x82 0xAC
+
+```c
+if (u >= 0x0800 && u <= 0xFFFF) {
+  OutputByte(0xE0 | ((u >> 12) && 0xFF)); /* 0xE0 = 11100000 */
+  OutputByte(0x80 | ((u >> 6 ) && 0x3F)); /* 0x80 = 10000000 */
+  OutputByte(0x80 | ((u      ) && 0x3F)); /* 0x3F = 00111111 */
+}
+```
+### 4　实现 `\uXXXX` 解析
+```c
+static int lept_parse_string(lept_context* c, lept_value* v) {
+    unsigned u;
+    /* ... */
+    for (;;) {
+        char ch = *p++;
+        switch (ch) {
+            /* ... */
+            case '\\':
+                switch (*p++) {
+                    /* ... */
+                    case 'u':
+                        if (!(p = lept_parse_hex4(p, &u)))
+                            STRING_ERROR(LEPT_PARSE_INVALID_UNICODE_HEX);
+                        /* \TODO surrogate handling */
+                        lept_encode_utf8(c, u);
+                        break;
+                    /* ... */
+                }
+            /* ... */
+        }
+    }
+}
+```
